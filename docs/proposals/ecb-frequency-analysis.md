@@ -1,10 +1,87 @@
-# Security Analysis: AES-128-ECB in MeshCore Channel Encryption
+# Security Analysis: MeshCore Channel Encryption
 
 ## Scope
 
-This analysis covers GRP_TXT (channel/group messages) as the primary subject. Section 7 extends the analysis to TXT_MSG (direct messages). All claims are derived from firmware source (`BaseChatMesh.cpp`, `Utils.cpp`, `Mesh.cpp`, `MeshCore.h`) unless explicitly marked as conjecture.
+This analysis covers MeshCore's encryption vulnerabilities in order of practical severity. Section 1 addresses PSK brute-force (the highest-priority practical threat). Sections 2–9 cover AES-128-ECB structural weaknesses. Section 8 covers TXT_MSG. All claims are derived from firmware source (`BaseChatMesh.cpp`, `Utils.cpp`, `Mesh.cpp`, `MeshCore.h`) unless explicitly marked as conjecture.
 
-## 1. How Encryption Works
+## 1. PSK Brute-Force with Timestamp Oracle
+
+### 1.1 The No-KDF Design
+
+MeshCore channel PSKs are base64-decoded directly into AES-128 keys with no key derivation function (from `BaseChatMesh::addChannel()`):
+
+```cpp
+int len = decode_base64((unsigned char *) psk_base64, strlen(psk_base64), dest->channel.secret);
+```
+
+No PBKDF2, scrypt, argon2, or HKDF is applied. The base64-decoded bytes ARE the AES key. This means:
+
+1. **Human-memorable passphrases have drastically reduced entropy.** If a user types "SecretChannel" as their PSK, the base64-decoded output is ~10 bytes of ASCII-range values. The key space is determined by the passphrase complexity, not by AES-128's theoretical 2^128 key space.
+
+2. **Short passphrases produce short keys.** `decode_base64` maps every 4 base64 characters to 3 bytes. A passphrase shorter than ~22 base64 characters produces fewer than 16 bytes, and the remainder of the 16-byte key buffer depends on whatever was previously in memory (likely zeros from initialization). An 8-character passphrase decodes to only 6 bytes — the effective key space may be as low as 2^48.
+
+3. **No salt.** Identical passphrases on different meshes produce identical keys. A single precomputed dictionary attack works globally against all MeshCore deployments.
+
+### 1.2 Timestamp as Known-Plaintext Oracle
+
+Every GRP_TXT plaintext begins with a structured, largely predictable header:
+
+```
+Block 0: [TS₀][TS₁][TS₂][TS₃][0x00][sender_name][: ][message_start...]
+```
+
+An attacker who captures a single packet can verify a candidate PSK by:
+1. Decrypting block 0 with the candidate key
+2. Checking if bytes 0–3 produce a plausible Unix timestamp (within a reasonable window of the capture time)
+3. Checking if byte 4 is 0x00 (TXT_TYPE_PLAIN)
+4. Optionally checking if bytes 5+ are valid ASCII (sender name)
+
+The timestamp alone constrains the search: a ±1-hour window around capture time yields ~7,200 valid timestamps out of 2^32 possibilities — a false-positive rate of ~1.7×10^-6. Combined with the type byte and ASCII sender-name check, false positives are effectively zero. **One captured packet is sufficient for definitive key verification.**
+
+### 1.3 Attack Cost Estimates
+
+Hardware assumption: commodity GPU (e.g., RTX 4090) performing ~10 billion AES-128-ECB block encryptions per second. This is conservative — optimized implementations achieve higher throughput.
+
+| Passphrase style | Search space | Time at 10^10 AES/sec |
+|---|---|---|
+| Single common English word (10K-word list) | ~10^4 | microseconds |
+| Single English word (170K full dictionary) | ~1.7×10^5 | microseconds |
+| Two concatenated common words | ~10^8 | ~10 milliseconds |
+| Three concatenated common words | ~10^12 | ~100 seconds (~2 min) |
+| Four random common words (Diceware-style) | ~10^16 | ~10^6 seconds (~12 days) |
+| Random 8-char alphanumeric (62^8) | ~2.2×10^14 | ~22,000 seconds (~6 hours) |
+| Random 12-char alphanumeric (62^12) | ~3.2×10^21 | ~10^11 seconds (infeasible) |
+| Full random 16-byte key (2^128) | ~3.4×10^38 | infeasible |
+
+**Important caveats on search space:**
+- Dictionary sizes vary: "common English words" ≈ 3K–10K; full dictionary ≈ 170K. Estimates above use 10K for "common" lists.
+- Humans do not choose words uniformly. Zipf's law applies — a small fraction of words account for most selections. The effective entropy is **lower** than the uniform assumption, making attacks faster.
+- Concatenation without separators creates ambiguity ("therapist" = "therapist" or "the"+"rapist"), but this marginally reduces search space rather than increasing it.
+- Multi-channel amortization: an attacker can test each candidate against ALL captured channels simultaneously, paying the AES cost once per candidate.
+
+### 1.4 Attack Properties
+
+- **Offline attack.** No rate limiting, no lockout, no detection. The attacker works entirely on captured ciphertext.
+- **Single-packet verification.** One GRP_TXT packet is sufficient. No need to collect multiple messages.
+- **No KDF stretching.** Each candidate requires exactly one AES-128 block decryption (16 bytes), not thousands of hash iterations.
+- **Global applicability.** No salt means precomputed tables work across all MeshCore deployments using the same passphrase.
+- **Side-channel exposure.** Since the PSK IS the key (no KDF), any AES key-schedule side-channel directly reveals the passphrase. PSK reuse across systems (e.g., same passphrase for MeshCore and WiFi) means compromise of one compromises both.
+
+### 1.5 Severity Assessment
+
+**PSK brute-force is the #1 practical threat to MeshCore channel confidentiality.** Unlike ECB frequency analysis (§5), which requires hundreds of captured messages with repeated content, PSK brute-force requires a single captured packet and succeeds whenever users choose human-memorable passphrases — which is the common case for manually-configured channels.
+
+Any channel using a passphrase of 3 or fewer common words, or any alphanumeric string shorter than 12 characters, should be considered **vulnerable to offline brute-force within hours to days** using commodity hardware.
+
+### 1.6 Recommended Mitigations
+
+**Priority 0 (Critical):** Apply a memory-hard KDF (argon2id preferred; scrypt or PBKDF2 with ≥100K iterations as fallback) to derive the AES key from the passphrase. This transforms each candidate test from ~1 nanosecond to ~100 milliseconds, increasing attack cost by a factor of ~10^8.
+
+**Priority 0a:** Add a per-channel salt (random bytes stored alongside the channel config) to prevent precomputed/global attacks.
+
+**Priority 0b:** Document that channel PSKs should be random 16-byte keys (e.g., generated with `openssl rand -base64 22`), not human-memorable passphrases. This is a stopgap until KDF support is added.
+
+## 2. How Encryption Works
 
 ### Constants (from `MeshCore.h`)
 - `CIPHER_KEY_SIZE = 16` (AES-128)
@@ -36,7 +113,7 @@ sha.update(dest + CIPHER_MAC_SIZE, enc_len);
 sha.finalizeHMAC(shared_secret, PUB_KEY_SIZE, dest, CIPHER_MAC_SIZE);
 ```
 
-**Key reuse flaw:** The same `shared_secret` buffer serves both AES and HMAC. AES uses `shared_secret[0..15]` (first 16 bytes). HMAC uses `shared_secret[0..31]` (full 32 bytes). The AES key is a prefix of the HMAC key. See §6 for implications.
+**Key reuse flaw:** The same `shared_secret` buffer serves both AES and HMAC. AES uses `shared_secret[0..15]` (first 16 bytes). HMAC uses `shared_secret[0..31]` (full 32 bytes). The AES key is a prefix of the HMAC key. See §7 for implications.
 
 ### GRP_TXT Plaintext Construction (from `BaseChatMesh::sendGroupMessage()`)
 
@@ -59,7 +136,7 @@ data[len] = 0; // need to make a C string again, with null terminator
 ```
 The receiver must re-add the null after decryption.
 
-## 2. Block Layout Analysis
+## 3. Block Layout Analysis
 
 ### Notation
 
@@ -115,7 +192,7 @@ Block 1 (bytes 16-22): [o][space][w][o][r][l][d] → padded to: [o][space][w][o]
 
 Block 1 contains 7 bytes of message text and 9 bytes of zero-padding.
 
-## 3. Attack Surface by Block Position
+## 4. Attack Surface by Block Position
 
 ### Block 0: Accidental Nonce from Timestamp
 
@@ -148,7 +225,7 @@ When B is small (short final fragment), most of the block is known plaintext. Fo
 
 This makes the partial final block a **stronger frequency analysis target** than interior blocks, where all 16 bytes may be unknown text.
 
-## 4. Feasible Attack Scenarios
+## 5. Feasible Attack Scenarios
 
 ### 4.1 Block Frequency Analysis on Blocks 1+
 
@@ -198,16 +275,16 @@ Ciphertext length = ⌈(5 + prefix_len + text_len) / 16⌉ × 16 bytes. This rev
 
 Channel PSKs are static and shared among all participants. ECDH shared secrets for direct messages are also static (no ephemeral key exchange). Compromise of any key decrypts all past and future traffic encrypted under that key.
 
-## 5. What Known-Plaintext Does NOT Achieve
+## 6. What Known-Plaintext Does NOT Achieve
 
 AES-128 is designed to resist known-plaintext attacks. An attacker who knows the full plaintext and ciphertext of block 0 (or any block) **cannot**:
 - Recover the AES key
 - Decrypt other blocks encrypted under the same key
 - Derive any information about other plaintexts from their ciphertexts
 
-The ECB weakness is **determinism** (identical plaintext → identical ciphertext), not key recovery. The attacks in §4 exploit pattern matching and frequency analysis, not cryptanalysis of AES itself.
+The ECB weakness is **determinism** (identical plaintext → identical ciphertext), not key recovery. The attacks in §5 exploit pattern matching and frequency analysis, not cryptanalysis of AES itself.
 
-## 6. HMAC Key Reuse: Cryptographic Design Flaw
+## 7. HMAC Key Reuse: Cryptographic Design Flaw
 
 From `encryptThenMAC()`:
 - AES key: `shared_secret[0..15]` (CIPHER_KEY_SIZE = 16)
@@ -222,7 +299,7 @@ The AES key is the first half of the HMAC key. Both are derived from the same `s
 
 **Practical impact:** In the current threat model (passive radio capture of LoRa packets), this is unlikely to be directly exploitable — HMAC-SHA256 does not leak its key through normal operation. However, it represents a structural weakness that compounds with any future vulnerability in either the AES or HMAC implementation.
 
-## 7. TXT_MSG (Direct Message) Block Layout
+## 8. TXT_MSG (Direct Message) Block Layout
 
 Direct messages use a different plaintext structure (from `BaseChatMesh::composeMsgPacket()`):
 
@@ -251,7 +328,7 @@ Key differences from GRP_TXT:
 - However, frequency analysis is harder: each sender-recipient pair uses a different key, so the attacker can only correlate messages within a single pair. The message volume for any given pair is typically much lower than for a group channel.
 - The fixed 5-byte header means block alignment is consistent across ALL direct messages (unlike GRP_TXT where alignment varies by sender name length). An attacker who compromises one ECDH key can build block frequency tables, but only for that specific pair.
 
-## 8. Mitigations
+## 9. Mitigations
 
 ### Priority 1: Switch to AES-128-CTR
 
@@ -283,9 +360,9 @@ Manual or automated periodic rotation of channel PSKs. Even monthly rotation lim
 
 Ephemeral ECDH for direct messages. Significant protocol change but prevents retroactive decryption on key compromise.
 
-## 9. Speculative: LLM-Assisted Analysis
+## 10. Speculative: LLM-Assisted Analysis
 
-> **This section is speculation, not formal analysis.** The claims below are plausible but unvalidated. They do not affect the formal findings in §1–8.
+> **This section is speculation, not formal analysis.** The claims below are plausible but unvalidated. They do not affect the formal findings in §1–9.
 
 An LLM could reduce the sample size needed for block frequency analysis:
 
@@ -295,19 +372,32 @@ An LLM could reduce the sample size needed for block frequency analysis:
 
 This does not change the fundamental requirement (blocks 1+ must repeat, or the final block must be in a small enough space for dictionary matching). It potentially reduces the number of captured messages needed for convergence, but no quantitative bound is established.
 
-## 10. Conclusion
+## 11. Conclusion
 
-MeshCore's AES-128-ECB encryption has three structural weaknesses:
+MeshCore's encryption has four vulnerabilities, ranked by practical exploitability:
 
-1. **Blocks beyond the timestamp's reach are deterministic.** Identical plaintext at the same block offset always produces identical ciphertext. For GRP_TXT messages longer than ~9 − N characters (where N is sender name length), this enables frequency analysis on blocks 1+. The partial final block, with its known zero-padding, is the strongest individual target.
+### Vulnerability #1: PSK Brute-Force (Critical)
 
-2. **AES and HMAC share the same key material** without a key derivation function. The AES key is a prefix of the HMAC key. This violates key separation and creates a structural dependency between the encryption and authentication mechanisms.
+**No KDF + known-plaintext oracle = offline key recovery from a single packet.** Any channel using a human-memorable passphrase of ≤3 common words or ≤11 alphanumeric characters is recoverable in minutes to hours on commodity GPU hardware. This is the highest-priority threat because it requires minimal attacker capability (one captured packet), succeeds against the most common deployment pattern (human-chosen passphrases), and completely compromises channel confidentiality. See §1.
 
-3. **No forward secrecy, no key rotation, no replay protection.** These are independent of ECB but compound the risk: a single key compromise exposes all traffic, past and future.
+### Vulnerability #2: ECB Determinism (Medium)
 
-**Severity assessment:**
-- For short conversational messages that fit in block 0: **low risk** — the timestamp accidental nonce prevents block repetition
-- For repetitive messages exceeding block 0 capacity from the same sender on a static-PSK channel: **medium risk** — frequency analysis on blocks 1+ and the partial final block is viable given sufficient traffic volume (order of magnitude: hundreds of messages with repeated content; precise threshold depends on traffic patterns and is not formally established)
-- For automated/scripted senders with predictable content: **elevated risk** — the combination of known block alignment, predictable content, and high volume makes frequency analysis practical
+**Blocks beyond the timestamp's reach are deterministic.** Identical plaintext at the same block offset always produces identical ciphertext. For GRP_TXT messages longer than ~9 − N characters (where N is sender name length), this enables frequency analysis on blocks 1+. The partial final block, with its known zero-padding, is the strongest individual target. Exploitation requires hundreds of captured messages with repeated content — a higher bar than PSK brute-force. See §4–§5.
 
-The timestamp in block 0 was not designed as a nonce and should not be relied upon as one. Switch to CTR mode.
+### Vulnerability #3: Key Material Reuse (Medium)
+
+**AES and HMAC share the same key material** without a key derivation function. The AES key is a prefix of the HMAC key. This violates key separation and creates a structural dependency between the encryption and authentication mechanisms. See §7.
+
+### Vulnerability #4: No Forward Secrecy (Low–Medium)
+
+**No forward secrecy, no key rotation, no replay protection.** These are independent of the above but compound the risk: a single key compromise (whether via brute-force or other means) exposes all past and future traffic encrypted under that key. See §9.
+
+**Summary of recommended mitigations (in priority order):**
+1. **(Critical)** Apply a memory-hard KDF (argon2id) to channel PSKs — §1.6
+2. **(Critical)** Add per-channel salt — §1.6
+3. **(High)** Switch from AES-128-ECB to AES-128-CTR — §9
+4. **(High)** Derive independent AES and HMAC subkeys via HKDF — §9
+5. **(Medium)** Constant-length padding, replay protection, key rotation — §9
+6. **(Low)** Forward secrecy via ephemeral ECDH — §9
+
+The timestamp in block 0 was not designed as a nonce and should not be relied upon as one.
