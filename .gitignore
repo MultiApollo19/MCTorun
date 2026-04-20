@@ -9,7 +9,7 @@ data-lincomatic/
 config-lincomatic.json
 theme.json
 firmware/
-.github
+.github/agents
 coverage/
 public-instrumented/
 .nyc_output/
