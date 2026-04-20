@@ -261,7 +261,7 @@ function formatVersionBadge(version, commit, engine, buildTime) {
   }
   var port = (typeof location !== 'undefined' && location.port) || '';
   var isProd = !port || port === '80' || port === '443';
-  var GH = 'https://github.com/Kpa-clawbot/corescope';
+  var GH = 'https://github.com/MultiApollo19/MCTorun';
   var parts = [];
   if (version && isProd) {
     var vTag = version.charAt(0) === 'v' ? version : 'v' + version;
