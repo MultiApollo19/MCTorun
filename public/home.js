@@ -52,10 +52,16 @@
             <strong>I know what I\u2019m doing</strong>
             <span>Just the analyzer, skip the guides</span>
           </button>
+          <button class="chooser-btn discord" id="chooseDiscord">
+            <span class="chooser-icon"><img src='img/Discord-Symbol-Light Blurple.png' alt='Discord' width=40 height=30></span>
+            <strong>Our Discord</strong>
+            <span>Join us!</span>
+          </button>
         </div>
       </section>`;
     document.getElementById('chooseNew').addEventListener('click', () => { setLevel('new'); renderHome(container); });
     document.getElementById('chooseExp').addEventListener('click', () => { setLevel('experienced'); renderHome(container); });
+    document.getElementById('chooseDiscord').addEventListener('click', () => { window.open('https://discord.gg/9WVKtD6Ga', '_blank'); });
   }
 
   function renderHome(container) {

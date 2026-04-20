@@ -11,12 +11,12 @@
 }
 .home-chooser h1 { font-size: 1.5rem; margin-bottom: 8px; }
 .home-chooser p { color: var(--text-muted); margin-bottom: 32px; }
-.chooser-options { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.chooser-options { display: flex; flex-direction: column; gap: 16px; align-items: center; }
 .chooser-btn {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 24px 28px; border-radius: 12px; border: 2px solid var(--border);
   background: var(--surface-1); color: var(--text); cursor: pointer;
-  transition: border-color .15s, transform .15s; min-width: 200px;
+  transition: border-color .15s, transform .15s; min-width: 250px;
 }
 .chooser-btn:hover { border-color: var(--accent); transform: translateY(-2px); }
 .chooser-icon { font-size: 2rem; }
