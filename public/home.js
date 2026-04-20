@@ -117,6 +117,11 @@
           <small>${exp ? 'Want setup guides? ' : 'Already know MeshCore? '}
           <a href="#" id="toggleLevel" style="color:var(--accent)">${exp ? 'Show new user tips' : 'Hide guides'}</a></small>
         </div>
+        <div class="home-attribution">
+          <small>
+            CoreScope fork based on <a href="https://github.com/Kpa-clawbot/CoreScope" target="_blank" rel="noopener" style="color:var(--accent)">original project</a>
+          </small>
+        </div>
       </section>
     `;
 
