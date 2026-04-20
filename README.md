@@ -267,6 +267,12 @@ Contributions welcome. Please read [AGENTS.md](AGENTS.md) for coding conventions
 
 **API Documentation:** CoreScope auto-generates an OpenAPI 3.0 spec. Browse the interactive Swagger UI at [`/api/docs`](https://analyzer.00id.net/api/docs) or fetch the machine-readable spec at [`/api/spec`](https://analyzer.00id.net/api/spec).
 
+## Fork Attribution
+
+This is a fork of the original **CoreScope** project by [Kpa-clawbot](https://github.com/Kpa-clawbot/CoreScope). CoreScope is a high-performance MeshCore network analyzer built with Go and vanilla JavaScript.
+
+**Original Repository:** [Kpa-clawbot/CoreScope](https://github.com/Kpa-clawbot/CoreScope)
+
 ## License
 
 MIT

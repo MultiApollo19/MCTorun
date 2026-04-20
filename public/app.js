@@ -261,7 +261,7 @@ function formatVersionBadge(version, commit, engine, buildTime) {
   }
   var port = (typeof location !== 'undefined' && location.port) || '';
   var isProd = !port || port === '80' || port === '443';
-  var GH = 'https://github.com/Kpa-clawbot/corescope';
+  var GH = 'https://github.com/MultiApollo19/MCTorun';
   var parts = [];
   if (version && isProd) {
     var vTag = version.charAt(0) === 'v' ? version : 'v' + version;
@@ -825,7 +825,7 @@ window.addEventListener('DOMContentLoaded', () => {
       const stats = await api('/stats', { ttl: CLIENT_TTL.stats });
       const el = document.getElementById('navStats');
       if (el) {
-        el.innerHTML = `<span class="stat-val">${stats.totalPackets}</span> pkts · <span class="stat-val">${stats.totalNodes}</span> nodes · <span class="stat-val">${stats.totalObservers}</span> obs`;
+                el.innerHTML = `<span class="stat-val">${stats.totalPackets}</span> pkts · <span class="stat-val">${stats.totalNodes}</span> nodes · <span class="stat-val">${stats.totalObservers}</span> obs${formatVersionBadge(stats.version, stats.commit, stats.engine, stats.buildTime)}`;
         el.querySelectorAll('.stat-val').forEach(s => s.classList.add('updated'));
         setTimeout(() => { el.querySelectorAll('.stat-val').forEach(s => s.classList.remove('updated')); }, 600);
       }
